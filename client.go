@@ -1,6 +1,11 @@
 package httpclient
 
-import "net/http"
+import (
+	"net/http"
+	"time"
+
+	"gopkg.in/eapache/go-resiliency.v1/breaker"
+)
 
 // Client is a standard utility interface that can be embedded in any larger interface.
 // NOTE: if an API endpoint requires a different retry-policy or a different circuit-breaker configuration, etc.
@@ -25,7 +30,7 @@ type GenericClient struct {
 }
 
 // NewGenericClient ...
-func NewGenericClient(name string) Client {
+func NewGenericClient(name string, status Status) Client {
 	tr := &http.Transport{
 		MaxIdleConns:    10,
 		IdleConnTimeout: 10 * time.Second,
@@ -35,8 +40,8 @@ func NewGenericClient(name string) Client {
 		name:           name,
 		client:         &http.Client{Transport: tr},
 		retryPolicy:    NewConstantRetryPolicy(100*time.Millisecond, 3),
-		circuitBreaker: NewBreaker(services.DefaultBreakerConfig),
-		status:         NewStatus(),
+		circuitBreaker: NewBreaker(DefaultBreakerConfig),
+		status:         status,
 	}
 
 	genericClient.SetStatus(true)
@@ -45,7 +50,7 @@ func NewGenericClient(name string) Client {
 }
 
 // Do ...
-func (g *GenericClient) Do(*http.Request) (*http.Response, error) {
+func (g *GenericClient) Do(req *http.Request) (*http.Response, error) {
 	response := &http.Response{}
 	b := g.circuitBreaker.CB
 	backoffs := g.retryPolicy.Backoffs()
@@ -75,6 +80,7 @@ func (g *GenericClient) Do(*http.Request) (*http.Response, error) {
 				time.Sleep(backoffs[retries])
 				retries++
 			} else {
+				g.SetStatus(false)
 				return response, breaker.ErrBreakerOpen
 			}
 		}
@@ -102,20 +108,7 @@ func (g *GenericClient) SetTransport(transport *http.Transport) {
 
 // GetStatus allows you to read the current live status for the service.
 func (g *GenericClient) GetStatus() bool {
-	if !g.status.Get(g.name) {
-		healthy, err := g.HealthCheck()
-		if err.Error != nil {
-			return false
-		}
-
-		if healthy {
-			g.SetStatus(true)
-		} else {
-			return false
-		}
-	}
-
-	return true
+	return g.status.Get(g.name)
 }
 
 // SetStatus allows you to set the current live status for the service.
